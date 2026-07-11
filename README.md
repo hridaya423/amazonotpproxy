@@ -17,7 +17,8 @@ Required environment:
 ```bash
 PORT=3000
 DATABASE_URL=postgres://...
-MACONDO_DATABASE_URL=postgres://readonly_user:password@...
+MACONDO_API_BASE_URL=https://macondo.example.com
+MACONDO_SERVICE_TOKEN=strong-random-secret
 INBOUND_WEBHOOK_SECRET=...
 ADMIN_TOKEN=...
 OUTBOUND_EMAIL_FROM=otp@yourdomain.com
@@ -25,10 +26,11 @@ OUTBOUND_EMAIL_PROVIDER_API_KEY=...
 ADMIN_EMAIL=fulfiller@example.com
 ```
 
+Set `MACONDO_SERVICE_TOKEN` to the same strong secret as Macondo's `NUXT_AMAZON_OTP_PROXY_API_KEY`. The proxy sends it as `Authorization: Bearer ...`; never commit or log the secret.
+
 Optional:
 
 ```bash
-ENABLE_FUZZY_MATCHING=false
 OUTBOUND_EMAIL_PROVIDER=sendgrid
 SLACK_BOT_TOKEN=...
 ```
@@ -36,6 +38,7 @@ SLACK_BOT_TOKEN=...
 ## Database
 
 Run `migrations/001_init.sql` against the proxy database.
+The proxy database stores the Amazon order ID to Macondo order ID link; Macondo order data is fetched through its authenticated service API.
 
 ## Routes
 

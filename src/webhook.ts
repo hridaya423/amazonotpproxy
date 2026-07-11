@@ -2,7 +2,7 @@ import { simpleParser } from "mailparser";
 import { buildBuyerOtpEmail, buildManualReviewEmail, type EmailSender } from "./email.js";
 import { findMatchingOrder, type MatchDeps } from "./matcher.js";
 import { ParseError, parseAmazonOtpEmail } from "./parser.js";
-import type { MacondoOrderContext, ParsedAmazonOtpEmail } from "./types.js";
+import type { ParsedAmazonOtpEmail } from "./types.js";
 
 export type WebhookStore = {
   reserveProcessedEmail(messageId: string, rawSubject: string | null): Promise<boolean>;
@@ -23,13 +23,12 @@ export type WebhookDeps = MatchDeps & {
   emailSender: EmailSender;
   outboundFrom: string;
   adminEmail: string;
-  allowFallbackMatching?: boolean;
 };
 
 export async function handleInboundEmail(body: Buffer, contentType: string | undefined, deps: WebhookDeps) {
   const inbound = await parseInbound(body, contentType).catch(async (error) => {
     const reason = error instanceof Error ? error.message : "invalid inbound payload";
-    await deps.emailSender.send(buildManualReviewEmail({ reason, candidates: [], to: deps.adminEmail, from: deps.outboundFrom }));
+    await deps.emailSender.send(buildManualReviewEmail({ reason, to: deps.adminEmail, from: deps.outboundFrom }));
     return null;
   });
   if (!inbound) return { status: "manual_review" };
@@ -44,7 +43,7 @@ export async function handleInboundEmail(body: Buffer, contentType: string | und
     if (!authPasses(inbound)) throw new ParseError("Amazon authentication failed");
 
     parsed = parseAmazonOtpEmail(inbound);
-    const match = await findMatchingOrder(parsed, deps, { allowFallback: deps.allowFallbackMatching });
+    const match = await findMatchingOrder(parsed, deps);
 
     if (match.kind === "matched") {
       const message = buildBuyerOtpEmail(parsed, match.order, deps.outboundFrom);
@@ -54,17 +53,17 @@ export async function handleInboundEmail(body: Buffer, contentType: string | und
         amazonOrderId: parsed.amazonOrderId,
         macondoOrderId: match.order.order.id,
         otp: parsed.otp,
-        sentTo: match.order.user.email,
+        sentTo: match.order.buyer.email,
         status: "sent",
       });
       return { status: "sent" };
     }
 
-    await manualReview(messageId, parsed, match.reason, match.candidates, deps);
+    await manualReview(messageId, parsed, match.reason, deps);
     return { status: "manual_review" };
   } catch (error) {
     const reason = error instanceof Error ? error.message : "unknown error";
-    await manualReview(messageId, parsed, reason, [], deps);
+    await manualReview(messageId, parsed, reason, deps);
     return { status: "manual_review" };
   }
 }
@@ -73,11 +72,10 @@ async function manualReview(
   messageId: string,
   parsed: ParsedAmazonOtpEmail | undefined,
   reason: string,
-  candidates: MacondoOrderContext[],
   deps: WebhookDeps,
 ) {
-  await deps.store.recordMatchAttempt({ messageId, extracted: parsed || { error: reason }, candidates, status: "manual_review" });
-  await deps.emailSender.send(buildManualReviewEmail({ parsed, reason, candidates, to: deps.adminEmail, from: deps.outboundFrom }));
+  await deps.store.recordMatchAttempt({ messageId, extracted: parsed || { error: reason }, candidates: [], status: "manual_review" });
+  await deps.emailSender.send(buildManualReviewEmail({ parsed, reason, to: deps.adminEmail, from: deps.outboundFrom }));
   await deps.store.finishProcessedEmail({
     messageId,
     amazonOrderId: parsed?.amazonOrderId,

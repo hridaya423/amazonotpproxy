@@ -1,13 +1,8 @@
 import pg from "pg";
-import type { MacondoOrderContext, ParsedAmazonOtpEmail } from "./types.js";
 
 const { Pool } = pg;
 
 export function createProxyPool(connectionString = requiredEnv("DATABASE_URL")) {
-  return new Pool({ connectionString });
-}
-
-export function createMacondoPool(connectionString = requiredEnv("MACONDO_DATABASE_URL")) {
   return new Pool({ connectionString });
 }
 
@@ -48,12 +43,13 @@ export class ProxyStore {
     );
   }
 
-  async getLinkedMacondoOrderId(amazonOrderId: string) {
+  async findAmazonOrderLink(amazonOrderId: string) {
     const result = await this.pool.query<{ macondo_order_id: number }>(
       `select macondo_order_id from amazon_order_links where amazon_order_id = $1`,
       [amazonOrderId],
     );
-    return result.rows[0]?.macondo_order_id ?? null;
+    const macondoOrderId = result.rows[0]?.macondo_order_id;
+    return macondoOrderId === undefined ? null : { macondoOrderId };
   }
 
   async createAmazonOrderLink(input: { amazonOrderId: string; macondoOrderId: number; createdBy: string }) {
@@ -64,61 +60,6 @@ export class ProxyStore {
       [input.amazonOrderId, input.macondoOrderId, input.createdBy],
     );
   }
-}
-
-export class MacondoRepository {
-  constructor(private pool: pg.Pool) {}
-
-  async getMacondoOrder(orderId: number): Promise<MacondoOrderContext | null> {
-    const result = await this.pool.query(
-      `select
-         so.id, so.status, so.quantity, so.item_snapshot, so.selected_modifiers, so.shipping_address, so.phone,
-         u.id as user_id, u.name as user_name, u.email as user_email, u.hcb_email, u.slack_id, u.username
-       from shop_orders so
-       join users u on u.id = so.user_id
-       where so.id = $1`,
-      [orderId],
-    );
-    return result.rows[0] ? rowToOrder(result.rows[0]) : null;
-  }
-
-  async findMacondoCandidates(_parsed: ParsedAmazonOtpEmail): Promise<MacondoOrderContext[]> {
-    const result = await this.pool.query(
-      `select
-         so.id, so.status, so.quantity, so.item_snapshot, so.selected_modifiers, so.shipping_address, so.phone,
-         u.id as user_id, u.name as user_name, u.email as user_email, u.hcb_email, u.slack_id, u.username
-       from shop_orders so
-       join users u on u.id = so.user_id
-       where so.status in ('pending_internal_fulfillment', 'shipped')
-         and so.item_snapshot->>'fulfillment_provider' = 'internal'
-         and so.created_at > now() - interval '30 days'
-       order by so.created_at desc
-       limit 25`,
-    );
-    return result.rows.map(rowToOrder);
-  }
-}
-
-function rowToOrder(row: Record<string, any>): MacondoOrderContext {
-  return {
-    order: {
-      id: row.id,
-      status: row.status,
-      quantity: row.quantity,
-      item_snapshot: row.item_snapshot,
-      selected_modifiers: row.selected_modifiers,
-      shipping_address: row.shipping_address,
-      phone: row.phone,
-    },
-    user: {
-      id: String(row.user_id),
-      name: row.user_name,
-      email: row.user_email,
-      hcb_email: row.hcb_email,
-      slack_id: row.slack_id,
-      username: row.username,
-    },
-  };
 }
 
 function requiredEnv(name: string) {

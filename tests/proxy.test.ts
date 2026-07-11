@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createApp } from "../src/app.js";
+import { getMacondoOrder } from "../src/macondo.js";
 import { findMatchingOrder } from "../src/matcher.js";
 import { ParseError, parseAmazonOtpEmail } from "../src/parser.js";
 import { signWebhookBody } from "../src/signature.js";
-import type { MacondoOrderContext, ParsedAmazonOtpEmail } from "../src/types.js";
+import type { MacondoOrderResponse, ParsedAmazonOtpEmail } from "../src/types.js";
 import type { WebhookDeps, WebhookStore } from "../src/webhook.js";
 
 const sampleText = `
@@ -80,58 +81,80 @@ test("rejects non-Amazon subject/from", () => {
 });
 
 test("exact amazon_order_links match returns order", async () => {
-  const order = orderContext();
+  const order = macondoOrder();
   const result = await findMatchingOrder(parsedEmail(), {
-    getLinkedMacondoOrderId: async () => 1234,
+    findAmazonOrderLink: async () => ({ macondoOrderId: 1234 }),
     getMacondoOrder: async () => order,
-    findMacondoCandidates: async () => [],
   });
 
   assert.equal(result.kind, "matched");
-  assert.equal(result.kind === "matched" && result.matchType, "exact");
+  assert.equal(result.kind === "matched" && result.order, order);
 });
 
-test("no exact match and one high-confidence candidate returns candidate", async () => {
-  const result = await findMatchingOrder(
-    parsedEmail(),
-    {
-      getLinkedMacondoOrderId: async () => null,
-      getMacondoOrder: async () => null,
-      findMacondoCandidates: async () => [orderContext()],
-    },
-    { allowFallback: true },
-  );
+test("missing Amazon order link returns manual review", async () => {
+  const result = await findMatchingOrder(parsedEmail(), {
+    findAmazonOrderLink: async () => null,
+    getMacondoOrder: async () => macondoOrder(),
+  });
 
-  assert.equal(result.kind, "matched");
-  assert.equal(result.kind === "matched" && result.matchType, "fallback");
+  assert.deepEqual(result, { kind: "manual_review", reason: "No Macondo order link" });
 });
 
-test("multiple candidates returns manual review", async () => {
-  const result = await findMatchingOrder(
-    parsedEmail(),
-    {
-      getLinkedMacondoOrderId: async () => null,
-      getMacondoOrder: async () => null,
-      findMacondoCandidates: async () => [orderContext(1234), orderContext(5678)],
-    },
-    { allowFallback: true },
-  );
+test("cancelled Macondo order returns manual review", async () => {
+  const order = macondoOrder();
+  order.order.status = "cancelled";
+  const result = await findMatchingOrder(parsedEmail(), {
+    findAmazonOrderLink: async () => ({ macondoOrderId: order.order.id }),
+    getMacondoOrder: async () => order,
+  });
 
-  assert.equal(result.kind, "manual_review");
+  assert.deepEqual(result, { kind: "manual_review", reason: "Macondo order is cancelled" });
 });
 
-test("no candidates returns manual review", async () => {
-  const result = await findMatchingOrder(
-    parsedEmail(),
-    {
-      getLinkedMacondoOrderId: async () => null,
-      getMacondoOrder: async () => null,
-      findMacondoCandidates: async () => [],
-    },
-    { allowFallback: true },
-  );
+test("non-physical Macondo order returns manual review", async () => {
+  const order = macondoOrder();
+  order.order.item_snapshot = { kind: "digital" };
+  const result = await findMatchingOrder(parsedEmail(), {
+    findAmazonOrderLink: async () => ({ macondoOrderId: order.order.id }),
+    getMacondoOrder: async () => order,
+  });
 
-  assert.equal(result.kind, "manual_review");
+  assert.deepEqual(result, { kind: "manual_review", reason: "Macondo order is not physical" });
+});
+
+test("buyer without email returns manual review", async () => {
+  const order = macondoOrder();
+  order.buyer.email = "";
+  const result = await findMatchingOrder(parsedEmail(), {
+    findAmazonOrderLink: async () => ({ macondoOrderId: order.order.id }),
+    getMacondoOrder: async () => order,
+  });
+
+  assert.deepEqual(result, { kind: "manual_review", reason: "Buyer has no email" });
+});
+
+test("Macondo request uses the configured Bearer token", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.MACONDO_API_BASE_URL;
+  const originalToken = process.env.MACONDO_SERVICE_TOKEN;
+  process.env.MACONDO_API_BASE_URL = "https://macondo.example.com///";
+  process.env.MACONDO_SERVICE_TOKEN = "test-token";
+
+  try {
+    globalThis.fetch = async (input, init) => {
+      assert.equal(String(input), "https://macondo.example.com/api/service/amazon-otp-proxy/orders/1234");
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-token");
+      return Response.json(macondoOrder());
+    };
+
+    assert.equal((await getMacondoOrder(1234)).order.id, 1234);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.MACONDO_API_BASE_URL;
+    else process.env.MACONDO_API_BASE_URL = originalBaseUrl;
+    if (originalToken === undefined) delete process.env.MACONDO_SERVICE_TOKEN;
+    else process.env.MACONDO_SERVICE_TOKEN = originalToken;
+  }
 });
 
 test("invalid signature returns 403", async () => {
@@ -168,18 +191,40 @@ function parsedEmail(): ParsedAmazonOtpEmail {
   return parseAmazonOtpEmail({ subject: "Amazon one-time password", from: "shipment-tracking@amazon.in", text: sampleText });
 }
 
-function orderContext(id = 1234): MacondoOrderContext {
+function macondoOrder(id = 1234): MacondoOrderResponse {
   return {
     order: {
       id,
+      user_id: "user_1",
+      item_id: 10,
       status: "pending_internal_fulfillment",
       quantity: 1,
       item_snapshot: { name: "Example Product Name", fulfillment_provider: "internal", kind: "physical" },
       selected_modifiers: null,
-      shipping_address: { firstName: "John", lastName: "", city: "Rome", state: "Italy", country: "IT" },
+      shipping_address: {
+        firstName: "John",
+        lastName: "",
+        address1: "1 Via Roma",
+        city: "Rome",
+        state: "Italy",
+        postalCode: "00100",
+        country: "IT",
+      },
       phone: null,
+      tracking_number: null,
+      external_reference: null,
+      region: null,
+      created_at: null,
+      updated_at: null,
     },
-    user: {
+    item: {
+      id: 10,
+      slug: "example-product",
+      name: "Example Product Name",
+      kind: "physical",
+      fulfillment_provider: "internal",
+    },
+    buyer: {
       id: "user_1",
       name: "Atharv",
       email: "buyer@example.com",
@@ -233,9 +278,8 @@ function fakeDeps(options: { duplicate?: boolean } = {}) {
     sent,
     finished,
     store,
-    getLinkedMacondoOrderId: async () => 1234,
-    getMacondoOrder: async () => orderContext(),
-    findMacondoCandidates: async () => [],
+    findAmazonOrderLink: async () => ({ macondoOrderId: 1234 }),
+    getMacondoOrder: async () => macondoOrder(),
     storeLink: async () => undefined,
     emailSender: { send: async (message: unknown) => void sent.push(message) },
     outboundFrom: "otp@example.com",

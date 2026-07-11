@@ -1,13 +1,13 @@
-import type { MacondoOrderContext, ParsedAmazonOtpEmail } from "./types.js";
+import type { MacondoOrderResponse, ParsedAmazonOtpEmail } from "./types.js";
 
 export type EmailMessage = { to: string; subject: string; text: string };
 export type EmailSender = { send(message: EmailMessage): Promise<void> };
 
-export function buildBuyerOtpEmail(parsed: ParsedAmazonOtpEmail, order: MacondoOrderContext, from: string): EmailMessage & { from: string } {
-  const item = parsed.productTitle || order.order.item_snapshot?.name || "Macondo shop item";
+export function buildBuyerOtpEmail(parsed: ParsedAmazonOtpEmail, order: MacondoOrderResponse, from: string): EmailMessage & { from: string } {
+  const item = order.order.item_snapshot?.name ?? order.item?.name ?? parsed.productTitle ?? "Macondo shop item";
   return {
     from,
-    to: order.user.email,
+    to: order.buyer.email,
     subject: `Amazon delivery OTP for Macondo order #${order.order.id}`,
     text: [
       `Your Amazon delivery OTP for Macondo order #${order.order.id} is ${parsed.otp}.`,
@@ -27,7 +27,6 @@ export function buildBuyerOtpEmail(parsed: ParsedAmazonOtpEmail, order: MacondoO
 export function buildManualReviewEmail(input: {
   parsed?: ParsedAmazonOtpEmail;
   reason: string;
-  candidates: MacondoOrderContext[];
   to: string;
   from: string;
 }) {
@@ -44,12 +43,6 @@ export function buildManualReviewEmail(input: {
       parsed ? `OTP: ${parsed.otp}` : null,
       parsed ? `Recipient: ${[parsed.recipientName, parsed.cityState].filter(Boolean).join(" - ")}` : null,
       parsed?.productTitle ? `Product: ${parsed.productTitle}` : null,
-      "",
-      "Candidates:",
-      ...input.candidates.map((candidate) =>
-        `- Macondo order #${candidate.order.id}, user ${candidate.user.email}, product ${candidate.order.item_snapshot?.name || "unknown"}`,
-      ),
-      input.candidates.length === 0 ? "- none" : null,
       "",
       "Please link the Amazon order manually.",
     ]

@@ -1,8 +1,9 @@
 import Fastify from "fastify";
 import { createSendGridEmailSender } from "./email.js";
-import { createMacondoPool, createProxyPool, MacondoRepository, ProxyStore } from "./db.js";
+import { createProxyPool, ProxyStore } from "./db.js";
 import { validWebhookSignature } from "./signature.js";
 import { handleInboundEmail, type WebhookDeps } from "./webhook.js";
+import { getMacondoOrder } from "./macondo.js";
 
 type AppDeps = WebhookDeps & { storeLink(amazonOrderId: string, macondoOrderId: number, createdBy: string): Promise<void> };
 
@@ -47,20 +48,17 @@ export function createApp(deps: AppDeps, config: { webhookSecret: string; adminT
 
 export function createProductionApp() {
   const proxyStore = new ProxyStore(createProxyPool());
-  const macondo = new MacondoRepository(createMacondoPool());
   const from = requiredEnv("OUTBOUND_EMAIL_FROM");
 
   const deps: AppDeps = {
     store: proxyStore,
-    getLinkedMacondoOrderId: (amazonOrderId) => proxyStore.getLinkedMacondoOrderId(amazonOrderId),
-    getMacondoOrder: (orderId) => macondo.getMacondoOrder(orderId),
-    findMacondoCandidates: (parsed) => macondo.findMacondoCandidates(parsed),
+    findAmazonOrderLink: (amazonOrderId) => proxyStore.findAmazonOrderLink(amazonOrderId),
+    getMacondoOrder,
     storeLink: (amazonOrderId, macondoOrderId, createdBy) =>
       proxyStore.createAmazonOrderLink({ amazonOrderId, macondoOrderId, createdBy }),
     emailSender: createSendGridEmailSender({ apiKey: requiredEnv("OUTBOUND_EMAIL_PROVIDER_API_KEY"), from }),
     outboundFrom: from,
     adminEmail: requiredEnv("ADMIN_EMAIL"),
-    allowFallbackMatching: process.env.ENABLE_FUZZY_MATCHING === "true",
   };
 
   return createApp(deps, { webhookSecret: requiredEnv("INBOUND_WEBHOOK_SECRET"), adminToken: requiredEnv("ADMIN_TOKEN") });

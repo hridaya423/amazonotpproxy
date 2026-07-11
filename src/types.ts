@@ -10,29 +10,47 @@ export type ParsedAmazonOtpEmail = {
   asin: string | null;
 };
 
-export type MacondoOrderContext = {
+export type MacondoOrderResponse = {
   order: {
     id: number;
+    user_id: string;
+    item_id: number;
     status: string;
     quantity: number;
     item_snapshot: {
       name?: string;
       fulfillment_provider?: string;
       kind?: string;
+      [key: string]: unknown;
     } | null;
     selected_modifiers: unknown;
     shipping_address: {
-      firstName?: string;
-      lastName?: string;
-      city?: string;
-      state?: string;
-      country?: string;
+      firstName: string;
+      lastName: string;
+      address1: string;
+      address2?: string | null;
+      city: string;
+      state: string;
+      postalCode: string;
+      country: string;
     } | null;
     phone: string | null;
+    tracking_number: string | null;
+    external_reference: string | null;
+    region: string | null;
+    created_at: string | null;
+    updated_at: string | null;
   };
-  user: {
+  item: {
+    id: number;
+    slug: string | null;
+    name: string;
+    kind: string;
+    fulfillment_provider: string;
+  } | null;
+  buyer: {
     id: string;
-    name: string | null;
+    name: string;
     email: string;
     hcb_email: string | null;
     slack_id: string | null;
@@ -41,5 +59,5 @@ export type MacondoOrderContext = {
 };
 
 export type MatchResult =
-  | { kind: "matched"; matchType: "exact" | "fallback"; order: MacondoOrderContext }
-  | { kind: "manual_review"; reason: string; candidates: MacondoOrderContext[] };
+  | { kind: "matched"; order: MacondoOrderResponse }
+  | { kind: "manual_review"; reason: string };
